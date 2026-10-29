@@ -444,12 +444,18 @@ def _inspect_tool_call(call: Any, tools: list[Any], tool_names: set[str]) -> tup
         "writefile": "write",
         "edit_file": "edit",
         "editfile": "edit",
+        "apply_diff": "edit",
+        "str_replace_editor": "edit",
         "shell": "bash",
+        "bash": "shell",
         "terminal": "bash",
         "powershell": "bash",
+        "cmd": "bash",
+        "sh": "bash",
         "run_command": "bash",
+        "execute_command": "bash",
     }
-    if name not in tool_names:
+    if tool_names and name not in tool_names:
         low = name.lower()
         if low in TOOL_ALIASES and TOOL_ALIASES[low] in tool_names:
             name = TOOL_ALIASES[low]
@@ -462,6 +468,20 @@ def _inspect_tool_call(call: Any, tools: list[Any], tool_names: set[str]) -> tup
         if parsed is None:
             return None, [f"{name}: arguments JSON could not be parsed"]
         args = parsed
+
+    if isinstance(args, dict):
+        if name in ("bash", "shell"):
+            if "command" not in args:
+                for alt in ("cmd", "script", "input"):
+                    if alt in args:
+                        args["command"] = args[alt]
+                        break
+        elif name in ("read", "view"):
+            if "filePath" not in args and "path" not in args:
+                for alt in ("file_path", "filename", "file"):
+                    if alt in args:
+                        args["filePath"] = args[alt]
+                        break
 
     problems = validate_arguments(args, _schema_for(tools, name))
     if problems:
@@ -554,6 +574,92 @@ def build_deepseek_prompt(
     return "\n\n".join(parts)
 
 
+_PIPE_CHAR = r'[\uff5c|]'
+_DSML_CALLS_RE = re.compile(
+    rf'<{_PIPE_CHAR}{{1,2}}\s*DSML\s*{_PIPE_CHAR}{{1,2}}\s*(?:calls|tool_calls)>(.*?)(?:</{_PIPE_CHAR}{{1,2}}\s*DSML\s*{_PIPE_CHAR}{{1,2}}\s*(?:calls|tool_calls)>|$)',
+    re.DOTALL | re.IGNORECASE
+)
+_DSML_INVOKE_RE = re.compile(
+    rf'<{_PIPE_CHAR}{{1,2}}\s*DSML\s*{_PIPE_CHAR}{{1,2}}\s*invoke\s+([^>]+)>(.*?)(?:</{_PIPE_CHAR}{{1,2}}\s*DSML\s*{_PIPE_CHAR}{{1,2}}\s*invoke>|$)',
+    re.DOTALL | re.IGNORECASE
+)
+_DSML_PARAM_RE = re.compile(
+    rf'<{_PIPE_CHAR}{{1,2}}\s*DSML\s*{_PIPE_CHAR}{{1,2}}\s*parameter\s+([^>]+)>(.*?)(?:</{_PIPE_CHAR}{{1,2}}\s*DSML\s*{_PIPE_CHAR}{{1,2}}\s*parameter>|$)',
+    re.DOTALL | re.IGNORECASE
+)
+_DSML_THINK_RE = re.compile(
+    rf'(?:<think>.*?</think>|<{_PIPE_CHAR}{{1,2}}\s*thought\s*{_PIPE_CHAR}{{1,2}}>.*?</{_PIPE_CHAR}{{1,2}}\s*thought\s*{_PIPE_CHAR}{{1,2}}>)',
+    re.DOTALL | re.IGNORECASE
+)
+
+
+def _extract_dsml_tool_calls(text: str) -> tuple[list[dict], str | None]:
+    """Extract native DeepSeek DSML tool calls (<｜｜DSML｜｜ calls>...) into tool_call dicts."""
+    if not isinstance(text, str) or ("DSML" not in text and "dsml" not in text):
+        return [], None
+
+    clean_text = text
+    calls: list[dict] = []
+
+    call_blocks = list(_DSML_CALLS_RE.finditer(clean_text))
+    bodies: list[str] = []
+
+    if call_blocks:
+        for cb in call_blocks:
+            bodies.append(cb.group(1))
+        clean_text = _DSML_CALLS_RE.sub("", clean_text)
+    else:
+        invokes = list(_DSML_INVOKE_RE.finditer(clean_text))
+        if invokes:
+            bodies.append(clean_text)
+            clean_text = _DSML_INVOKE_RE.sub("", clean_text)
+
+    for body in bodies:
+        for inv in _DSML_INVOKE_RE.finditer(body):
+            inv_attrs, inv_body = inv.group(1), inv.group(2)
+            name_m = re.search(r'name=["\']([^"\']+)["\']', inv_attrs)
+            if not name_m:
+                continue
+            tool_name = name_m.group(1).strip()
+            params: dict = {}
+
+            for p in _DSML_PARAM_RE.finditer(inv_body):
+                p_attrs, p_val = p.group(1), p.group(2)
+                p_name_m = re.search(r'name=["\']([^"\']+)["\']', p_attrs)
+                if not p_name_m:
+                    continue
+                p_name = p_name_m.group(1).strip()
+
+                is_str_m = re.search(r'string=["\'](true|false)["\']', p_attrs, re.IGNORECASE)
+                is_str = is_str_m.group(1).lower() == "true" if is_str_m else None
+
+                if is_str is True:
+                    val = p_val
+                elif is_str is False:
+                    try:
+                        val = json.loads(p_val)
+                    except Exception:
+                        val = p_val
+                else:
+                    try:
+                        val = json.loads(p_val)
+                    except Exception:
+                        val = p_val
+
+                params[p_name] = val
+
+            call_id = "call_" + uuid.uuid4().hex
+            calls.append({
+                "id": call_id,
+                "name": tool_name,
+                "arguments": params,
+            })
+
+    clean_text = _DSML_THINK_RE.sub("", clean_text).strip()
+    leftover_content = clean_text if clean_text else None
+    return calls, leftover_content
+
+
 def parse_deepseek_response(
     raw_text: Any,
     tools: list[Any],
@@ -561,6 +667,31 @@ def parse_deepseek_response(
 ) -> dict:
     """Parse/validate DeepSeek's reply, preventing tool call JSON leaks into chat."""
     raw = str(raw_text or "").strip()
+
+    # Intercept and translate native DeepSeek DSML tool calls (<｜｜DSML｜｜ calls>...)
+    if "DSML" in raw or "dsml" in raw:
+        dsml_calls, dsml_content = _extract_dsml_tool_calls(raw)
+        if dsml_calls:
+            tool_names = _tool_names(tools)
+            validated: list[dict] = []
+            failures: list[str] = []
+            for call in dsml_calls:
+                result, problems = _inspect_tool_call(call, tools, tool_names)
+                if result is None:
+                    failures.extend(problems)
+                else:
+                    validated.append(result)
+            if failures:
+                return {
+                    "type": "validation_failure",
+                    "errors": failures,
+                    "content": f"Tool call validation error: {'; '.join(failures)}",
+                }
+            res = {"type": "tool_call", "tool_calls": validated}
+            if dsml_content:
+                res["content"] = dsml_content
+            return res
+
     obj = _extract_json_object(raw)
 
     # Emergency recovery: if obj is None but response contains tool call indicators
