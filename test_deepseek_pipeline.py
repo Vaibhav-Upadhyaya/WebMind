@@ -134,8 +134,6 @@ class TestDeepSeekPipeline(unittest.TestCase):
         self.assertIn("deepseek-chat", ids)
         self.assertIn("deepseek-r1", ids)
 
-
-
     def test_json_copy_download_leak_repaired(self):
         raw = (
             'jsonCopyDownload{\n'
@@ -191,6 +189,85 @@ class TestDeepSeekPipeline(unittest.TestCase):
         parsed = parse_deepseek_response(raw, self.TOOLS)
         self.assertEqual(parsed["type"], "tool_call")
         self.assertEqual(parsed["tool_calls"][0]["name"], "read")
+
+    def test_user_snippet_dsml_tool_calls_with_shell_alias_and_windows_paths(self):
+        raw = (
+            '<｜｜DSML｜｜ calls>'
+            '<｜｜DSML｜｜ invoke name="shell">'
+            '<｜｜DSML｜｜ parameter name="command" string="true">python -c "import reportlab; print(reportlab.Version)"</｜｜DSML｜｜ parameter>'
+            '<｜｜DSML｜｜ parameter name="workdir" string="true">C:\\Users\\VAIBHAV UPADHYAYA\\Documents\\VS code projects\\kittyShitty</｜｜DSML｜｜ parameter>'
+            '<｜｜DSML｜｜ parameter name="timeout" string="false">60000</｜｜DSML｜｜ parameter>'
+            '</｜｜DSML｜｜ invoke>'
+            '</｜｜DSML｜｜ calls>'
+        )
+        parsed = parse_deepseek_response(raw, self.TOOLS)
+        self.assertEqual(parsed["type"], "tool_call")
+        self.assertEqual(len(parsed["tool_calls"]), 1)
+        tc = parsed["tool_calls"][0]
+        self.assertEqual(tc["name"], "bash")
+        self.assertEqual(tc["arguments"]["command"], 'python -c "import reportlab; print(reportlab.Version)"')
+        self.assertEqual(tc["arguments"]["workdir"], r"C:\Users\VAIBHAV UPADHYAYA\Documents\VS code projects\kittyShitty")
+        self.assertEqual(tc["arguments"]["timeout"], 60000)
+
+        # Verify nonstream response formatting
+        nonstream = build_nonstream_response(parsed, "chat-123", 1000)
+        self.assertEqual(nonstream["choices"][0]["finish_reason"], "tool_calls")
+        self.assertEqual(nonstream["choices"][0]["message"]["tool_calls"][0]["function"]["name"], "bash")
+
+        # Verify streaming SSE chunks
+        chunks = sse_tool_call_chunks("chat-123", 1000, parsed["tool_calls"], content=parsed.get("content"))
+        self.assertTrue(any('"tool_calls"' in c for c in chunks))
+        self.assertTrue(any('"finish_reason": "tool_calls"' in c for c in chunks))
+
+    def test_dsml_with_thinking_and_preamble_content(self):
+        raw = (
+            '<think>Need to check Python dependency version before modifying PDF layout.</think>\n'
+            'Checking the installed reportlab version now.\n'
+            '<｜｜DSML｜｜ calls>'
+            '<｜｜DSML｜｜ invoke name="shell">'
+            '<｜｜DSML｜｜ parameter name="command" string="true">python -c "import reportlab"</｜｜DSML｜｜ parameter>'
+            '</｜｜DSML｜｜ invoke>'
+            '</｜｜DSML｜｜ calls>'
+        )
+        parsed = parse_deepseek_response(raw, self.TOOLS)
+        self.assertEqual(parsed["type"], "tool_call")
+        self.assertEqual(len(parsed["tool_calls"]), 1)
+        self.assertEqual(parsed["tool_calls"][0]["name"], "bash")
+        self.assertIn("Checking the installed reportlab version now.", parsed.get("content", ""))
+        self.assertNotIn("<think>", parsed.get("content", ""))
+        self.assertNotIn("DSML", parsed.get("content", ""))
+
+    def test_dsml_multiple_invocations_in_single_calls_block(self):
+        raw = (
+            '<｜｜DSML｜｜ calls>'
+            '<｜｜DSML｜｜ invoke name="read_file">'
+            '<｜｜DSML｜｜ parameter name="path" string="true">main.py</｜｜DSML｜｜ parameter>'
+            '</｜｜DSML｜｜ invoke>'
+            '<｜｜DSML｜｜ invoke name="shell">'
+            '<｜｜DSML｜｜ parameter name="command" string="true">git status</｜｜DSML｜｜ parameter>'
+            '</｜｜DSML｜｜ invoke>'
+            '</｜｜DSML｜｜ calls>'
+        )
+        parsed = parse_deepseek_response(raw, self.TOOLS)
+        self.assertEqual(parsed["type"], "tool_call")
+        self.assertEqual(len(parsed["tool_calls"]), 2)
+        self.assertEqual(parsed["tool_calls"][0]["name"], "read")
+        self.assertEqual(parsed["tool_calls"][0]["arguments"]["path"], "main.py")
+        self.assertEqual(parsed["tool_calls"][1]["name"], "bash")
+        self.assertEqual(parsed["tool_calls"][1]["arguments"]["command"], "git status")
+
+    def test_dsml_ascii_pipe_and_tool_calls_tag_variant(self):
+        raw = (
+            '<||DSML|| tool_calls>'
+            '<||DSML|| invoke name="bash">'
+            '<||DSML|| parameter name="command" string="true">dir</||DSML|| parameter>'
+            '</||DSML|| invoke>'
+            '</||DSML|| tool_calls>'
+        )
+        parsed = parse_deepseek_response(raw, self.TOOLS)
+        self.assertEqual(parsed["type"], "tool_call")
+        self.assertEqual(parsed["tool_calls"][0]["name"], "bash")
+        self.assertEqual(parsed["tool_calls"][0]["arguments"]["command"], "dir")
 
 if __name__ == "__main__":
     unittest.main()
