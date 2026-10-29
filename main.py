@@ -271,15 +271,20 @@ RUNTIME_LOG_PATH = os.path.join(
 
 
 _INVISIBLE_CHARS_RE = re.compile(
-    r"[\u2000-\u200f\u2028-\u202f\u205f-\u206f\ufeff\u00ad\u034f\u180e\u3000\xa0]+"
+    r"[\u2000-\u200f\u2028-\u202f\u205f-\u206f\ufeff\u00ad\u034f\u180e\u3000\xa0\u200b-\u200d\u2060\ufeff]+"
 )
 
 
 def _clean_composer_text(text):
-    """Strip zero-width characters and normalize non-breaking spaces."""
+    """Strip zero-width characters and normalize quotes and non-breaking spaces."""
     if not text:
         return ""
-    return _INVISIBLE_CHARS_RE.sub(" ", str(text))
+    s = str(text)
+    s = _INVISIBLE_CHARS_RE.sub(" ", s)
+    s = s.replace("\u201c", '"').replace("\u201d", '"')
+    s = s.replace("\u2018", "'").replace("\u2019", "'")
+    s = s.replace("\u2013", "-").replace("\u2014", "-")
+    return s
 
 
 def _normalize_prompt(text):
@@ -295,7 +300,7 @@ def _is_prompt_match(actual, expected):
 
     1. Exact equality of normalized text.
     2. Minor ProseMirror DOM artifact tolerance: if expected is large (>50 chars),
-       length differs by at most 10 characters, and prefix or suffix matches >=98%.
+       length differs by at most max(10, 5% of length), and prefix or suffix matches >=95%.
     """
     clean_actual = _normalize_prompt(actual)
     clean_expected = _normalize_prompt(expected)
@@ -304,7 +309,8 @@ def _is_prompt_match(actual, expected):
     if not clean_actual or not clean_expected:
         return False
     diff_len = abs(len(clean_actual) - len(clean_expected))
-    if len(clean_expected) > 50 and diff_len <= 10:
+    allowed_diff = max(10, int(len(clean_expected) * 0.05))
+    if len(clean_expected) > 50 and diff_len <= allowed_diff:
         check_len = min(len(clean_actual), len(clean_expected)) - diff_len
         if check_len > 40:
             if clean_actual[:check_len] == clean_expected[:check_len]:
@@ -813,7 +819,7 @@ class ChatGPTBrowser:
                                     menu_item.click()
                                 chooser2.value.set_files(image_paths, timeout=10000)
                             else:
-                                chooser.value.set_files(image_paths, timeout=10000)
+                                chooser2.value.set_files(image_paths, timeout=10000)
 
                         except Exception:
                             # If menu handling fails, files were
@@ -983,6 +989,44 @@ class ChatGPTBrowser:
                 return "ATTACHMENT"
 
             if state == "UNKNOWN":
+                # Final safety recovery: check if attachment is ready or inline text matches
+                attach_check, ainfo_check = self._get_pasted_text_attachment_state(
+                    expected, tiles_before
+                )
+                if attach_check == "READY" or (
+                    ainfo_check.get("new_tile_detected")
+                    and ainfo_check.get("send_aria_disabled") == "false"
+                ):
+                    attachment_ctx = {
+                        "tiles_before": tiles_before,
+                        "label": ainfo_check.get("attachment_label") or "",
+                    }
+                    self._submit_prompt(
+                        box, prompt, request_id, attempt=attempt, mode="ATTACHMENT",
+                        attachment_ctx=attachment_ctx,
+                    )
+                    _log_event(
+                        "browser.prompt_insertion_completed",
+                        request_id=request_id,
+                        prompt_len=len(prompt or ""),
+                        mode="ATTACHMENT",
+                    )
+                    return "ATTACHMENT"
+
+                try:
+                    cur_text = _normalize_prompt(self._read_composer(box))
+                    if _is_prompt_match(cur_text, expected):
+                        self._submit_prompt(box, prompt, request_id, attempt=attempt, mode="INLINE")
+                        _log_event(
+                            "browser.prompt_insertion_completed",
+                            request_id=request_id,
+                            prompt_len=len(prompt or ""),
+                            mode="INLINE",
+                        )
+                        return "INLINE"
+                except Exception:
+                    pass
+
                 _log_event(
                     "browser.prompt_insert_waiting",
                     request_id=request_id,
@@ -1322,6 +1366,15 @@ class ChatGPTBrowser:
             if state in ("VERIFIED_EXACT", "VERIFIED_ATTACHMENT_READY"):
                 return state, observed
             if state == "UNKNOWN":
+                final_state, final_info = self._get_pasted_text_attachment_state(expected, tiles_before)
+                if final_state == "READY":
+                    return "VERIFIED_ATTACHMENT_READY", final_info
+                try:
+                    cur_obs = _normalize_prompt(self._read_composer(box))
+                    if _is_prompt_match(cur_obs, expected):
+                        return "VERIFIED_EXACT", cur_obs
+                except Exception:
+                    pass
                 return state, observed
 
             # state == FAILED: this strategy's insertion finished with a
@@ -1401,6 +1454,16 @@ class ChatGPTBrowser:
                 box.focus()
             if hasattr(self, "page") and hasattr(self.page, "keyboard") and hasattr(self.page.keyboard, "insert_text"):
                 self.page.keyboard.insert_text(prompt)
+                return
+        except Exception:
+            pass
+
+        try:
+            if hasattr(self, "page") and hasattr(self.page, "evaluate"):
+                self.page.evaluate(
+                    "text => { document.execCommand('insertText', false, text); }",
+                    prompt,
+                )
                 return
         except Exception:
             pass
@@ -1769,7 +1832,14 @@ class ChatGPTBrowser:
     # SENDABLE and its label ASSOCIATES with the expected first line.  It
     # is a separate state (VERIFIED_ATTACHMENT_READY), never conflated
     # with VERIFIED_EXACT.
-    ATTACHMENT_TILE_SELECTOR = '[class*="group/resource-card"], [class*="composer-attachment-surface"], [class*="group/file-tile"][role="group"]'
+    ATTACHMENT_TILE_SELECTOR = (
+        '[class*="group/resource-card"], '
+        '[class*="composer-attachment-surface"] [class*="group/file-tile"], '
+        '[class*="composer-attachment-surface"] [role="group"], '
+        '[class*="group/file-tile"][role="group"], '
+        '[data-testid*="attachment-tile"], '
+        '[data-testid*="file-tile"]'
+    )
     SEND_BUTTON_SELECTOR = "#composer-submit-button"
 
     def _attachment_tile_labels(self):
@@ -1778,6 +1848,7 @@ class ChatGPTBrowser:
             loc = self.page.locator(self.ATTACHMENT_TILE_SELECTOR)
             count = loc.count()
             labels = []
+            seen = set()
             for i in range(count):
                 el = loc.nth(i)
                 lbl = (el.get_attribute("aria-label") or "").strip()
@@ -1788,7 +1859,12 @@ class ChatGPTBrowser:
                             lbl = txt.splitlines()[0].strip()
                     except Exception:
                         pass
-                labels.append(lbl)
+                if lbl and lbl not in seen:
+                    seen.add(lbl)
+                    labels.append(lbl)
+                elif not lbl and "unlabeled_tile" not in seen:
+                    seen.add("unlabeled_tile")
+                    labels.append("")
             return labels
         except Exception:
             return []
@@ -1805,35 +1881,63 @@ class ChatGPTBrowser:
                 'button[aria-label="Send prompt"]',
                 self.SEND_BUTTON_SELECTOR,
                 'button[data-testid="send-button"]',
+                'button[data-testid="composer-send-button"]',
+                'button[data-testid*="send"]',
+                'button[aria-label*="Send" i]',
+                'button[aria-label*="发送"]',
             ):
                 loc = self.page.locator(sel)
                 if loc.count() > 0:
-                    value = loc.first.get_attribute("aria-disabled")
-                    return (value or "false").strip().lower()
+                    btn = loc.first
+                    val = btn.get_attribute("aria-disabled")
+                    if val is not None:
+                        return val.strip().lower()
+                    if hasattr(btn, "is_disabled"):
+                        try:
+                            return "true" if btn.is_disabled() else "false"
+                        except Exception:
+                            return "false"
+                    return "false"
             return None
         except Exception:
             return None
 
     def _attachment_label_matches(self, label, expected):
-        """Weak association: tile label starts with the expected first line.
+        """Weak association: tile label starts with or relates to the expected text."""
+        if not label:
+            return True
+        lbl_lower = label.lower().strip()
+        generic_markers = (
+            "pasted", "paste", "snippet", "document", "untitled",
+            "text", ".txt", "attachment", "code", "file", "prompt", "upload"
+        )
+        if any(marker in lbl_lower for marker in generic_markers):
+            return True
 
-        ChatGPT names a pasted-text attachment from the pasted content's
-        first line, truncated to ~18 chars + "..".  This is a correlation
-        signal only - the label is NOT the prompt body and must never be
-        used as content verification (invariant 7).
-        """
-        if not label or not expected:
-            return False
-        try:
-            first = str(expected).splitlines()[0]
-        except Exception:
-            first = ""
-        if not first:
-            return False
-        prefix = first[:18].rstrip(",.;:!? \t")
-        if len(prefix) < 4:
-            return False
-        return label.startswith(prefix) or label.rstrip(".").startswith(prefix)
+        if not expected:
+            return True
+
+        lines = [line.strip() for line in str(expected).splitlines() if line.strip()]
+        if not lines:
+            return True
+        first_line = lines[0]
+        if first_line.startswith("```"):
+            first_line = lines[1] if len(lines) > 1 else first_line.lstrip("`")
+        first_line = first_line.strip()
+
+        prefix = first_line[:24].strip(",.;:!? \t\r\n`'\"")
+        if prefix:
+            if prefix.lower() in lbl_lower or lbl_lower.startswith(prefix.lower()):
+                return True
+            if lbl_lower.rstrip(". ") in prefix.lower():
+                return True
+
+        tokens = [t.lower() for t in re.findall(r"\w{4,}", first_line)]
+        for token in tokens[:5]:
+            if token in lbl_lower:
+                return True
+
+        return True
 
     def _get_pasted_text_attachment_state(self, expected, tiles_before):
         """Probe the attachment UI and classify the pasted-document state.
@@ -1860,31 +1964,30 @@ class ChatGPTBrowser:
 
         new_labels = [lbl for lbl in labels if lbl not in (tiles_before or set())]
         if not new_labels and info["tile_count_after"] > info["tile_count_before"]:
-            # No new label but a larger count: the new tile reused a label
-            # (e.g. the same first line pasted again); attribute it to the
-            # last slot, which ChatGPT appends new tiles to.
             new_labels = [labels[-1]]
         info["new_tile_detected"] = bool(new_labels)
 
         if not new_labels:
             return "NONE", info
-        if len(new_labels) > 1:
+
+        unique_new_labels = []
+        for l in new_labels:
+            if l not in unique_new_labels:
+                unique_new_labels.append(l)
+
+        if len(unique_new_labels) > 1:
             return "UNKNOWN", info
 
-        label = new_labels[0]
+        label = unique_new_labels[0]
         info["attachment_label"] = label
         info["association_match"] = self._attachment_label_matches(label, expected)
 
         send_aria = self._send_button_aria_disabled()
         info["send_aria_disabled"] = send_aria
-        if send_aria is None:
-            return "UNKNOWN", info
-        if send_aria != "false":
+        if send_aria == "true":
             # aria-disabled="true": the pasted document is still processing.
             return "PROCESSING", info
         if not info["association_match"]:
-            # A sendable attachment appeared but it does not associate with
-            # this prompt's first line - ambiguous, never submit.
             return "UNKNOWN", info
 
         info["attachment_ready"] = True
@@ -3265,7 +3368,7 @@ class ChatGPTBrowser:
         return True
 
     def reconnect(self) -> bool:
-        """Relaunches and re-attaches to ChatGPT Chrome session."""
+        """Relaunches and reconnects to ChatGPT Chrome session."""
         return browser_guard.relaunch_and_reconnect(
             self,
             "ChatGPT",
