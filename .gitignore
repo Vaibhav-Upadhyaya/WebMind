@@ -1,32 +1,68 @@
-# Python bytecode
-__pycache__/
-*.py[cod]
-*$py.class
+# ============================================================
+# WebMind — Privacy & Security Blocklist
+# ============================================================
+# Multi-provider isolated browser profiles
+chatgpt_profile/
+deepseek_profile/
+kimi_profile/
+glm_profile/
+WebMindChrome/
+WebMindEdge/
+WebMindBrave/
+webmind_profile*/
+Default/
+BrowserMetrics/
+Login Data*
+*.pma
 
-# Environments
-.env
-.venv
-env/
-venv/
-ENV/
-
-# WebMind runtime artifacts & persistent browser profiles
-webmind_debug.log
-webmind_runtime.log
-server_err.log
-server_out.log
-profiles/
+# Debug, smoke, lifecycle, and runtime logs
 *.log
+smoke_*.log
+webmind_debug.log
+webmind_lifecycle.log
+webmind_lifecycle.txt
+smoke_out.log
+smoke_err.log
+webmind_runtime.log
 
-# Distribution & Build
+# Build, distribution, and installer binaries
 dist/
 build/
+Output/
 *.spec
+*.zip
+*.tar.gz
+*.exe
 
-# IDE & Editor
+# Diagnostics bundles, update staging, and test caches
+diagnostics/
+updates/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local sensitive configuration and credentials
+.env
+.env.*
+*.pem
+*.key
+*.cert
+patches.json
+config.json
+
+# Runtime, editor, and OS noise
 .vscode/
 .idea/
-*.sublime-project
-*.sublime-workspace
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+.venv/
+env/
+*.db
+*.sqlite
+*.pid
 .DS_Store
 Thumbs.db
+scratch/
+*.local.*
