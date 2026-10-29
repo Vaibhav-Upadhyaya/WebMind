@@ -1,0 +1,32 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# WebMind runtime artifacts & persistent browser profiles
+webmind_debug.log
+webmind_runtime.log
+server_err.log
+server_out.log
+profiles/
+*.log
+
+# Distribution & Build
+dist/
+build/
+*.spec
+
+# IDE & Editor
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+.DS_Store
+Thumbs.db
