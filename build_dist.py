@@ -87,9 +87,25 @@ WEBMIND_BAT = """@echo off
 setlocal
 cd /d "%~dp0"
 title WebMind AI Bridge
-if exist "runtime\\python.exe" (\n    runtime\\python.exe launcher.py %*\n) else (\n    where python >nul 2>nul\n    if %ERRORLEVEL% EQU 0 (\n        python launcher.py %*\n    ) else (\n        echo [ERROR] Python not found. Please install Python 3.10+ or place embedded Python in runtime\\.\n        pause\n    )\n)\n"""
+if exist "runtime\\python.exe" (\r
+    runtime\\python.exe launcher.py %*\r
+) else (\r
+    where python >nul 2>nul\r
+    if %ERRORLEVEL% EQU 0 (\r
+        python launcher.py %*\r
+    ) else (\r
+        echo [ERROR] Python not found. Please install Python 3.10+ or place embedded Python in runtime\\.\r
+        pause\r
+    )\r
+)
+"""
 
-REQUIREMENTS_TXT = """fastapi>=0.100.0\nuvicorn>=0.22.0\nplaywright>=1.40.0\nhttpx>=0.24.0\npydantic>=2.0.0\n"""
+REQUIREMENTS_TXT = """fastapi>=0.100.0
+uvicorn>=0.22.0
+playwright>=1.40.0
+httpx>=0.24.0
+pydantic>=2.0.0
+"""
 
 UPDATE_WEBMIND_PS1 = """# ============================================================
 # WebMind 1-Click Offline Updater (v1.0.1)

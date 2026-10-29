@@ -25,7 +25,7 @@ DEFAULT_SELECTORS: Dict[str, Dict[str, List[str]]] = {
         "send": [
             'button[data-testid="send-button"]:visible',
             'button[aria-label*="Send"]:visible',
-            'button[aria-label*="\u53d1\u9001"]:visible',
+            'button[aria-label*="发送"]:visible',
             'button[aria-label="Dictate"]:visible',
             'button[aria-label="Start Voice"]:visible',
             'button:has(svg):visible',
@@ -33,7 +33,7 @@ DEFAULT_SELECTORS: Dict[str, Dict[str, List[str]]] = {
         "stop": [
             'button[data-testid="stop-button"]:visible',
             'button[aria-label*="Stop"]:visible',
-            'button[aria-label*="\u505c\u6b62"]:visible',
+            'button[aria-label*="停止"]:visible',
         ],
         "messages": [
             '[data-markdown-text-style="assistant-message"]',
@@ -50,20 +50,20 @@ DEFAULT_SELECTORS: Dict[str, Dict[str, List[str]]] = {
         "input": [
             "textarea#chat-input",
             'textarea[placeholder*="DeepSeek"]',
-            'textarea[placeholder*="\u53d1\u9001"]',
+            'textarea[placeholder*="发送"]',
             'div[contenteditable="true"]',
             "textarea",
         ],
         "send": [
             'div[role="button"][aria-label*="Send"]:visible',
             'button[aria-label*="Send"]:visible',
-            'button[aria-label*="\u53d1\u9001"]:visible',
+            'button[aria-label*="发送"]:visible',
             'button:has(svg):visible',
         ],
         "stop": [
             'div[role="button"][aria-label*="Stop"]:visible',
             'button[aria-label*="Stop"]:visible',
-            'button[aria-label*="\u505c\u6b62"]:visible',
+            'button[aria-label*="停止"]:visible',
         ],
         "messages": [
             ".ds-markdown:visible",
@@ -77,11 +77,11 @@ DEFAULT_SELECTORS: Dict[str, Dict[str, List[str]]] = {
             'div[contenteditable="true"]',
             'div[role="textbox"][contenteditable="true"]',
             'textarea[placeholder*="Kimi"]',
-            'textarea[placeholder*="\u53d1\u9001"]',
+            'textarea[placeholder*="发送"]',
             "textarea",
         ],
         "send": [
-            'button[aria-label*="\u53d1\u9001"]:visible',
+            'button[aria-label*="发送"]:visible',
             'div[role="button"][aria-label*="Send"]:visible',
             'button[aria-label*="Send"]:visible',
             'button:has(svg):visible',
@@ -95,12 +95,12 @@ DEFAULT_SELECTORS: Dict[str, Dict[str, List[str]]] = {
     "glm": {
         "input": [
             'textarea[placeholder*="GLM"]',
-            'textarea[placeholder*="\u8bf7\u8f93\u5165"]',
+            'textarea[placeholder*="请输入"]',
             'div[contenteditable="true"]',
             "textarea",
         ],
         "send": [
-            'button[aria-label*="\u53d1\u9001"]:visible',
+            'button[aria-label*="发送"]:visible',
             'div[role="button"][aria-label*="Send"]:visible',
             'button[aria-label*="Send"]:visible',
             'button:has(svg):visible',
