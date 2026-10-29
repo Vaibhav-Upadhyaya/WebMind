@@ -1126,6 +1126,43 @@ class TestPromptNormalizationAndMatching(unittest.TestCase):
         with_extra_space = base + " "
         self.assertTrue(main_mod._is_prompt_match(with_extra_space, base))
 
+    def test_is_prompt_match_smart_quotes_and_tolerance(self):
+        text_with_smart_quotes = 'He said “hello world” and ‘goodbye’ – test'
+        text_with_straight_quotes = 'He said "hello world" and \'goodbye\' - test'
+        self.assertTrue(main_mod._is_prompt_match(text_with_smart_quotes, text_with_straight_quotes))
+
+    def test_attachment_label_matches_generic_markers(self):
+        browser = main_mod.ChatGPTBrowser.__new__(main_mod.ChatGPTBrowser)
+        prompt = '{"tool_name": "run_command", "arguments": {"cmd": "ls"}}'
+        self.assertTrue(browser._attachment_label_matches("Pasted text", prompt))
+        self.assertTrue(browser._attachment_label_matches("Document", prompt))
+        self.assertTrue(browser._attachment_label_matches("pasted-text.txt", prompt))
+        self.assertTrue(browser._attachment_label_matches("Snippet", prompt))
+
+    def test_attachment_label_matches_code_fences(self):
+        browser = main_mod.ChatGPTBrowser.__new__(main_mod.ChatGPTBrowser)
+        prompt = "```json\n{\n  \"action\": \"build\"\n}\n```"
+        self.assertTrue(browser._attachment_label_matches("action: build..", prompt))
+        self.assertTrue(browser._attachment_label_matches("Pasted text", prompt))
+
+    def test_duplicate_dom_tile_labels_deduplicated(self):
+        browser = main_mod.ChatGPTBrowser.__new__(main_mod.ChatGPTBrowser)
+        # Mock page returning 2 elements with the same label
+        class FakeLocator:
+            def count(self):
+                return 2
+            def nth(self, idx):
+                class FakeEl:
+                    def get_attribute(self, attr):
+                        return "Pasted text"
+                return FakeEl()
+        class FakePageObj:
+            def locator(self, sel):
+                return FakeLocator()
+        browser.page = FakePageObj()
+        labels = browser._attachment_tile_labels()
+        self.assertEqual(labels, ["Pasted text"])
+
     def test_is_prompt_match_rejects_actual_differences(self):
         self.assertFalse(main_mod._is_prompt_match("hello", "goodbye"))
         self.assertFalse(main_mod._is_prompt_match("ABC" * 30, "XYZ" * 30))
