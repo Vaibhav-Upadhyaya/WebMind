@@ -1,14 +1,14 @@
 # ============================================================
 # WebMind 1-Line Installer for Windows
 # Usage:
-#   irm https://raw.githubusercontent.com/Vaibhav-Upadhyaya-codes/WebMind/master/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/Vaibhav-Upadhyaya/WebMind/main/install.ps1 | iex
 # ============================================================
 
 $ErrorActionPreference = "Stop"
 
 Write-Host ""
 Write-Host "============================================================" -ForegroundColor Cyan
-Write-Host "       Installing WebMind AI Bridge (Production v1.0.0)      " -ForegroundColor Cyan
+Write-Host "       Installing WebMind AI Bridge (Production v1.0.1)      " -ForegroundColor Cyan
 Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host ""
 
@@ -27,11 +27,11 @@ if (-not $pythonCmd) {
 }
 
 # 3. Download latest release
-$repo = "Vaibhav-Upadhyaya-codes/WebMind"
+$repo = "Vaibhav-Upadhyaya/WebMind"
 $tempZip = Join-Path $env:TEMP "WebMind-Windows-Portable.zip"
 
 Write-Host "[1/5] Checking latest WebMind release from GitHub..." -ForegroundColor Green
-$downloadUrl = "https://github.com/$repo/releases/download/v1.0.0/WebMind-v1.0.0-Windows-Portable.zip"
+$downloadUrl = "https://github.com/$repo/releases/download/v1.0.1/WebMind-v1.0.1-Windows-Portable.zip"
 
 try {
     $headers = @{ "User-Agent" = "WebMind-Installer" }
