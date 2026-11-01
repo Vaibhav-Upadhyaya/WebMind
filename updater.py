@@ -17,7 +17,7 @@ import profile_manager
 log = logger.get_logger("updater")
 
 CURRENT_VERSION = "1.0.1"
-DEFAULT_GITHUB_REPO = os.environ.get("WEBMIND_GITHUB_REPO", "Vaibhav-Upadhyaya-codes/WebMind")
+DEFAULT_GITHUB_REPO = os.environ.get("WEBMIND_GITHUB_REPO", "Vaibhav-Upadhyaya/WebMind")
 
 
 def parse_version(v: str) -> Tuple[int, ...]:
@@ -59,69 +59,65 @@ def check_for_updates(
     timeout: float = 3.0,
 ) -> Dict[str, Any]:
     """
-    Queries GitHub Releases API for the latest release.
-    Returns update status, release notes, and asset download URLs.
+    Queries GitHub API for the latest published release.
+    Returns a dict with update status, version, download URLs, and changelog.
     """
     url = f"https://api.github.com/repos/{repo}/releases/latest"
     req = urllib.request.Request(
         url,
-        headers={
-            "User-Agent": f"WebMind/{current_version}",
-            "Accept": "application/vnd.github.v3+json",
-        },
+        headers={"User-Agent": f"WebMind-Updater/{current_version}"},
     )
-
-    result: Dict[str, Any] = {
-        "update_available": False,
-        "current_version": current_version,
-        "latest_version": current_version,
-        "release_name": "",
-        "release_notes": "",
-        "download_url": "",
-        "assets": [],
-        "published_at": "",
-        "checked_at": "",
-    }
 
     try:
         with urllib.request.urlopen(req, timeout=timeout) as response:
-            if response.status == 200:
-                data = json.loads(response.read().decode("utf-8"))
-                tag_name = data.get("tag_name", "").lstrip("vV")
-                result["latest_version"] = tag_name
-                result["release_name"] = data.get("name", "")
-                result["release_notes"] = data.get("body", "")
-                result["published_at"] = data.get("published_at", "")
-                result["download_url"] = data.get("html_url", "")
+            data = json.loads(response.read().decode("utf-8"))
 
-                assets = []
-                for a in data.get("assets", []):
-                    assets.append({
-                        "name": a.get("name"),
-                        "size": a.get("size"),
-                        "download_url": a.get("browser_download_url"),
-                    })
-                result["assets"] = assets
+        latest_tag = data.get("tag_name", "")
+        changelog = data.get("body", "")
+        assets = data.get("assets", [])
 
-                if is_newer_version(tag_name, current_version):
-                    result["update_available"] = True
-                    log.info(f"Update available: {current_version} -> {tag_name}")
-                else:
-                    log.info(f"WebMind is up to date ({current_version}).")
+        portable_zip_url: Optional[str] = None
+        hotpatch_zip_url: Optional[str] = None
+
+        for asset in assets:
+            name = asset.get("name", "").lower()
+            download_url = asset.get("browser_download_url", "")
+            if "hotpatch" in name:
+                hotpatch_zip_url = download_url
+            elif "portable" in name or name.endswith(".zip"):
+                portable_zip_url = download_url
+
+        has_update = is_newer_version(latest_tag, current_version)
+        if has_update:
+            log.info(f"Update available: {current_version} -> {latest_tag}")
+        else:
+            log.info(f"WebMind is up to date ({current_version}).")
+
+        return {
+            "has_update": has_update,
+            "current_version": current_version,
+            "latest_version": latest_tag,
+            "changelog": changelog,
+            "portable_zip_url": portable_zip_url,
+            "hotpatch_zip_url": hotpatch_zip_url,
+            "published_at": data.get("published_at", ""),
+        }
     except Exception as e:
         log.warning(f"Update check skipped or failed ({e}). WebMind continues normally.")
+        return {
+            "has_update": False,
+            "current_version": current_version,
+            "error": str(e),
+        }
 
-    return result
 
-
-def stage_update_file(source_path: str, filename: Optional[str] = None) -> str:
-    """Copies an update file into the staging directory for deployment."""
-    dest_dir = get_update_dir()
-    name = filename or os.path.basename(source_path)
-    dest_path = os.path.join(dest_dir, name)
-
-    with open(source_path, "rb") as sf, open(dest_path, "wb") as df:
-        df.write(sf.read())
-
-    log.info(f"Update staged at: {dest_path}")
-    return dest_path
+def stage_update_payload(payload_bytes: bytes, target_filename: str) -> str:
+    """
+    Writes downloaded update package to the staging directory.
+    Returns the absolute path to the staged file.
+    """
+    dest = os.path.join(get_update_dir(), target_filename)
+    with open(dest, "wb") as f:
+        f.write(payload_bytes)
+    log.info(f"Update staged at: {dest}")
+    return dest

@@ -30,8 +30,8 @@ if (-not $pythonCmd) {
 $repo = "Vaibhav-Upadhyaya/WebMind"
 $tempZip = Join-Path $env:TEMP "WebMind-Windows-Portable.zip"
 
-Write-Host "[1/5] Checking latest WebMind release from GitHub..." -ForegroundColor Green
-$downloadUrl = "https://github.com/$repo/releases/download/v1.0.1/WebMind-v1.0.1-Windows-Portable.zip"
+Write-Host "[1/5] Checking latest WebMind package from GitHub..." -ForegroundColor Green
+$downloadUrl = $null
 
 try {
     $headers = @{ "User-Agent" = "WebMind-Installer" }
@@ -41,27 +41,54 @@ try {
         $downloadUrl = $asset.browser_download_url
     }
 } catch {
-    # Keep standard fallback URL
+    # No published releases yet or rate-limited; fallback below
 }
 
 Write-Host "[2/5] Downloading package..." -ForegroundColor Green
-try {
-    Invoke-WebRequest -Uri $downloadUrl -OutFile $tempZip -UserAgent "WebMind-Installer" -UseBasicParsing
-} catch {
-    Write-Host "[!] Download failed: $_" -ForegroundColor Red
-    Write-Host "    Please ensure your internet connection is active or download manually from:" -ForegroundColor Yellow
-    Write-Host "    https://github.com/$repo/releases" -ForegroundColor Yellow
-    Exit 1
+$downloadSuccess = $false
+
+if ($downloadUrl) {
+    try {
+        Invoke-WebRequest -Uri $downloadUrl -OutFile $tempZip -UserAgent "WebMind-Installer" -UseBasicParsing
+        $downloadSuccess = $true
+    } catch {
+        # Fall back to repository archive
+    }
+}
+
+if (-not $downloadSuccess) {
+    $archiveUrl = "https://github.com/$repo/archive/refs/heads/main.zip"
+    try {
+        Invoke-WebRequest -Uri $archiveUrl -OutFile $tempZip -UserAgent "WebMind-Installer" -UseBasicParsing
+        $downloadSuccess = $true
+    } catch {
+        Write-Host "[!] Download failed: $_" -ForegroundColor Red
+        Write-Host "    Please ensure your internet connection is active or clone manually:" -ForegroundColor Yellow
+        Write-Host "    git clone https://github.com/$repo.git" -ForegroundColor Yellow
+        Exit 1
+    }
 }
 
 Write-Host "[3/5] Extracting to $installDir..." -ForegroundColor Green
 Expand-Archive -Path $tempZip -DestinationPath $env:TEMP -Force
+
+# Locate extracted directory (supports both portable zip and GitHub archive)
 $extractedFolder = Join-Path $env:TEMP "WebMind"
+if (-not (Test-Path $extractedFolder)) {
+    $extractedFolder = Join-Path $env:TEMP "WebMind-main"
+}
 if (Test-Path $extractedFolder) {
     Copy-Item -Path "$extractedFolder\*" -Destination $installDir -Recurse -Force
     Remove-Item -Recurse -Force $extractedFolder
 }
 Remove-Item -Force $tempZip
+
+# Ensure WebMind.bat launcher is present
+$batLauncher = Join-Path $installDir "WebMind.bat"
+if (-not (Test-Path $batLauncher)) {
+    $batContent = "@echo off`r`nsetlocal`r`ncd /d `"%~dp0`"`r`ntitle WebMind AI Bridge`r`npython launcher.py %*`r`n"
+    Set-Content -Path $batLauncher -Value $batContent -Encoding Ascii
+}
 
 Write-Host "[4/5] Installing dependencies..." -ForegroundColor Green
 & python -m pip install -r "$installDir\requirements.txt" --quiet --disable-pip-version-check

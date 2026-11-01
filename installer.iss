@@ -8,9 +8,9 @@
 ; ============================================================
 
 #define MyAppName "WebMind"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.0.1"
 #define MyAppPublisher "Vaibhav Upadhyaya"
-#define MyAppURL "https://github.com/Vaibhav-Upadhyaya-codes/WebMind"
+#define MyAppURL "https://github.com/Vaibhav-Upadhyaya/WebMind"
 #define MyAppExeName "WebMind.bat"
 
 [Setup]
