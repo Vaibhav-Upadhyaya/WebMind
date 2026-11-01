@@ -59,6 +59,21 @@ class TestDeepSeekPipeline(unittest.TestCase):
                 },
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "write",
+                "description": "Write file.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "content": {"type": "string"},
+                    },
+                    "required": ["path", "content"],
+                },
+            },
+        },
     ]
 
     def test_build_deepseek_prompt_with_tools(self):
@@ -133,6 +148,8 @@ class TestDeepSeekPipeline(unittest.TestCase):
         ids = [m["id"] for m in data]
         self.assertIn("deepseek-chat", ids)
         self.assertIn("deepseek-r1", ids)
+
+
 
     def test_json_copy_download_leak_repaired(self):
         raw = (
@@ -268,6 +285,42 @@ class TestDeepSeekPipeline(unittest.TestCase):
         self.assertEqual(parsed["type"], "tool_call")
         self.assertEqual(parsed["tool_calls"][0]["name"], "bash")
         self.assertEqual(parsed["tool_calls"][0]["arguments"]["command"], "dir")
+
+    def test_truncated_json_string_auto_closed_and_recovered(self):
+        # Truncated mid-string without closing quote or closing brackets
+        raw = '{"webmind_response": "tool_call", "tool_calls": [{"id": "c1", "name": "bash", "arguments": {"command": "npm run build'
+        parsed = parse_deepseek_response(raw, self.TOOLS)
+        self.assertEqual(parsed["type"], "tool_call")
+        self.assertEqual(len(parsed["tool_calls"]), 1)
+        self.assertEqual(parsed["tool_calls"][0]["name"], "bash")
+        self.assertEqual(parsed["tool_calls"][0]["arguments"]["command"], "npm run build")
+
+    def test_unescaped_interior_quotes_in_tool_call_arguments(self):
+        # Interior double quotes that are not structural JSON delimiters
+        raw = '{"webmind_response": "tool_call", "tool_calls": [{"id": "c1", "name": "bash", "arguments": {"command": "echo "hello world" && ls"}}]}'
+        parsed = parse_deepseek_response(raw, self.TOOLS)
+        self.assertEqual(parsed["type"], "tool_call")
+        self.assertEqual(parsed["tool_calls"][0]["name"], "bash")
+        self.assertIn("hello world", parsed["tool_calls"][0]["arguments"]["command"])
+
+    def test_user_exact_truncated_reportlab_script_tool_call_recovered(self):
+        # Exact reproduction of user snippet: truncated at token limit, unescaped interior quotes, unclosed string
+        raw = (
+            '{"webmind_response": "tool_call", "tool_calls": [{"id": "call_4", "name": "write", "arguments": '
+            '{"path": "C:\\\\Users\\\\VAIBHAV UPADHYAYA\\\\Documents\\\\VS code projects\\\\kittyShitty\\\\build_notes.py", '
+            '"content": "import os\\nfrom reportlab.lib.pagesizes import A4\\n'
+            'essential - it makes the \\"stop when s + wk > M\\" pruning valid.\\n'
+            'answer to \\"write the bounding function\\".\\n'
+            'hence \\"0/1\\".\\n'
+            'Sorting by profit/weight ratio makes'
+        )
+        parsed = parse_deepseek_response(raw, self.TOOLS)
+        self.assertEqual(parsed["type"], "tool_call")
+        self.assertEqual(len(parsed["tool_calls"]), 1)
+        tc = parsed["tool_calls"][0]
+        self.assertEqual(tc["name"], "write")
+        self.assertIn("build_notes.py", tc["arguments"]["path"])
+        self.assertIn("Sorting by profit/weight ratio makes", tc["arguments"]["content"])
 
 if __name__ == "__main__":
     unittest.main()
