@@ -55,7 +55,7 @@ def _wants_literal_backslashes(text: str) -> bool:
 
 
 def _repair_json_escapes(text: str) -> str:
-    return re.sub(r"\\(?![\\\\\"\/bfnrtu])", r"\\\\", text)
+    return re.sub(r"(?<!\\)\\(?![\\\"/bfnrtu])", r"\\\\", text)
 
 
 def _repair_windows_path_escapes(text: str) -> str:
@@ -163,6 +163,8 @@ def _balance_json_structure(text: str) -> str:
                 stack.pop()
         else:
             out.append(char)
+    if in_string:
+        out.append('"')
     while stack:
         out.append("]" if stack.pop() == "[" else "}")
     return "".join(out)
@@ -191,6 +193,10 @@ def _parse_json_lenient(text: str) -> dict | None:
         snippet = text[first_brace:last_brace + 1].strip()
         if snippet != text:
             candidates.append(snippet)
+    if first_brace != -1:
+        tail_snippet = text[first_brace:].strip()
+        if tail_snippet not in candidates:
+            candidates.append(tail_snippet)
 
     expanded = []
     for base in candidates:
@@ -228,6 +234,16 @@ def _is_envelope_dict(obj: Any) -> bool:
         or "tool_calls" in obj
         or "tool_call" in obj
         or ("content" in obj and "role" not in obj)
+    )
+
+
+def _is_tool_envelope(obj: Any) -> bool:
+    if not isinstance(obj, dict):
+        return False
+    return (
+        obj.get("webmind_response") == "tool_call"
+        or "tool_calls" in obj
+        or "tool_call" in obj
     )
 
 
@@ -308,6 +324,12 @@ def _extract_json_object(text: str) -> dict | None:
                     envelopes.append(repaired)
                     pos = next_close + 1
                     continue
+            tail_cand = text[idx:]
+            if '"webmind_response"' in tail_cand or '"tool_calls"' in tail_cand or '"tool_call"' in tail_cand:
+                repaired = _parse_json_lenient(tail_cand)
+                if _is_envelope_dict(repaired) and repaired not in envelopes:
+                    envelopes.append(repaired)
+                    break
             pos = idx + 1
 
     if not envelopes:
@@ -554,14 +576,30 @@ def parse_kimi_response(
     obj = _extract_json_object(raw)
 
     # Emergency recovery: if obj is None but response contains tool call indicators
-    if obj is None and ('"webmind_response"' in raw or '"tool_calls"' in raw or '"tool_call"' in raw):
+    if obj is None and ('"tool_calls"' in raw or '"tool_call"' in raw or '"webmind_response": "tool_call"' in raw or '"webmind_response":"tool_call"' in raw):
         first_b = raw.find("{")
-        last_b = raw.rfind("}")
-        if first_b != -1 and last_b > first_b:
-            recovered_cand = _UI_CHROME_REGEX.sub("", raw[first_b:last_b + 1].strip()).strip()
-            recovered_obj = _parse_json_lenient(recovered_cand)
-            if _is_envelope_dict(recovered_obj):
-                obj = recovered_obj
+        if first_b != -1:
+            prefix = raw[:first_b].strip()
+            prefix = _clean_wrapper_tags(prefix)
+            prefix = _UI_CHROME_REGEX.sub("", prefix).strip()
+            prefix = re.sub(r"^`{3,}[^\n`]*", "", prefix).strip()
+            if not prefix:
+                last_b = raw.rfind("}")
+                if last_b > first_b:
+                    suffix = raw[last_b + 1:].strip()
+                    suffix = _clean_wrapper_tags(suffix)
+                    suffix = _UI_CHROME_REGEX.sub("", suffix).strip()
+                    suffix = re.sub(r"`{3,}$", "", suffix).strip()
+                    if not suffix:
+                        recovered_cand = _UI_CHROME_REGEX.sub("", raw[first_b:last_b + 1].strip()).strip()
+                        recovered_obj = _parse_json_lenient(recovered_cand)
+                        if _is_tool_envelope(recovered_obj):
+                            obj = recovered_obj
+                if obj is None:
+                    recovered_cand = _UI_CHROME_REGEX.sub("", raw[first_b:].strip()).strip()
+                    recovered_obj = _parse_json_lenient(recovered_cand)
+                    if _is_tool_envelope(recovered_obj):
+                        obj = recovered_obj
 
     if obj is None:
         return {"type": "message", "content": raw}
