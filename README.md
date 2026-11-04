@@ -8,7 +8,7 @@
 [![Version](https://img.shields.io/badge/Version-v1.0.1-blue.svg)](https://github.com/Vaibhav-Upadhyaya/WebMind/releases)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-brightgreen.svg)](https://www.python.org/)
 [![Platform: Windows](https://img.shields.io/badge/Platform-Windows-0078D6.svg)](https://microsoft.com/windows)
-[![Tests Passing](https://img.shields.io/badge/Tests-423%20Passed-success.svg)]()
+[![Tests Passing](https://img.shields.io/badge/Tests-430%20Passed-success.svg)]()
 [![OpenAI Compatible](https://img.shields.io/badge/API-OpenAI%20Compatible-orange.svg)]()
 
 *Turn your web accounts (**DeepSeek, ChatGPT Plus/Free, Kimi, GLM-4**) into unlimited, local OpenAI-compatible API endpoints for **OpenCode, DeepSeek Harness, Cursor, Windsurf, Cline, Continue.dev, and Aider**.*
@@ -476,13 +476,13 @@ flowchart TD
 
 ## 🧪 Test Suite & Reliability
 
-WebMind includes a rigorous test suite of **423 automated unit tests** covering protocol conformance, tool-call validation, streaming stability, and multi-browser resilience:
+WebMind includes a rigorous test suite of **430 automated unit tests** covering protocol conformance, tool-call validation, streaming stability, and multi-browser resilience:
 
 ```powershell
 python -m unittest discover
 ```
 ```text
-Ran 423 tests in 22.230s
+Ran 430 tests in 18.934s
 
 OK
 ```
