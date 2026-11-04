@@ -25,6 +25,7 @@ from glm_protocol import (
     sse_tool_call_chunks,
     build_nonstream_response,
 )
+from protocol_recovery import enforce_and_recover
 
 GLM_PORT = int(os.environ.get("PORT", os.environ.get("WEBMIND_GLM_PORT", "8004")))
 
@@ -112,10 +113,18 @@ async def chat_completions(request: ChatRequest, raw_request: Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"GLM Browser Error: {str(e)}")
 
-    parsed = parse_glm_response(
+    def _ask_fn(directive: str) -> str:
+        res = glm_browser.ask(directive)
+        return getattr(res, "text", str(res))
+
+    parsed = await asyncio.to_thread(
+        enforce_and_recover,
         response.text,
-        request.tools or [],
+        parse_fn=parse_glm_response,
+        ask_fn=_ask_fn,
+        tools=request.tools or [],
         history=request.messages,
+        provider_name="glm",
     )
 
     if request.stream:
