@@ -13,6 +13,8 @@ import re
 import uuid
 from typing import Any
 
+from protocol_recovery import audit_spurious_refusal
+
 
 TOOL_ROLE_MAX_CHARS = int(os.environ.get("DEEPSEEK_TOOL_ROLE_MAX_CHARS", "8000"))
 MESSAGE_MAX_CHARS = int(os.environ.get("DEEPSEEK_MESSAGE_MAX_CHARS", "6000"))
@@ -462,10 +464,14 @@ def _inspect_tool_call(call: Any, tools: list[Any], tool_names: set[str]) -> tup
         "read_file": "read",
         "readfile": "read",
         "view_file": "read",
+        "read": "read_file",
+        "view": "read_file",
         "write_file": "write",
         "writefile": "write",
+        "write": "write_file",
         "edit_file": "edit",
         "editfile": "edit",
+        "edit": "edit_file",
         "apply_diff": "edit",
         "str_replace_editor": "edit",
         "shell": "bash",
@@ -476,6 +482,9 @@ def _inspect_tool_call(call: Any, tools: list[Any], tool_names: set[str]) -> tup
         "sh": "bash",
         "run_command": "bash",
         "execute_command": "bash",
+        "exec": "bash",
+        "execute": "bash",
+        "run": "bash",
     }
     if tool_names and name not in tool_names:
         low = name.lower()
@@ -551,6 +560,12 @@ def build_deepseek_prompt(
     if has_tools:
         instruction = (
             "You are an autonomous AI coding assistant connected to a live workspace with real tool capabilities.\n"
+            "OPERATIONAL CONTRACT:\n"
+            "1. TOOL DEFINITIONS: The tools listed below are live, executable system capabilities provided by the local workspace runtime.\n"
+            "2. TOOL CALL ENVELOPES: You do NOT execute tools or check user desktop permissions. You emit a ```json tool_call envelope.\n"
+            "3. RUNTIME EXECUTION: The local WebMind runtime executes the requested tool (e.g. running PowerShell/bash commands, opening apps, reading files).\n"
+            "4. TOOL RESULTS: The tool's output is returned to you in the subsequent turn under [TOOL].\n"
+            "- FORBIDDEN: NEVER claim you cannot open applications, cannot run PowerShell, lack desktop access, or need the user to run commands manually. Emit the `bash` tool call and let the runtime execute it.\n\n"
             "When executing tools, reply ONLY with a ```json code fence containing the tool_call envelope:\n"
             "```json\n"
             "{\n"
@@ -577,10 +592,28 @@ def build_deepseek_prompt(
     for msg in messages:
         role = _role(msg)
         content = _content_to_text(msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None))
-        block = f"[{role.upper()}]:\n{content}"
         tcs = msg.get("tool_calls") if isinstance(msg, dict) else getattr(msg, "tool_calls", None)
-        if tcs:
-            block += f"\n[tool_calls]: {json.dumps(tcs)}"
+
+        if role == "assistant" and has_tools:
+            if tcs:
+                call_list = tcs if isinstance(tcs, list) else [tcs]
+                envelope_str = json.dumps({
+                    "webmind_response": "tool_call",
+                    "tool_calls": call_list
+                }, indent=2)
+                block = f"[ASSISTANT]:\n```json\n{envelope_str}\n```"
+            elif content.strip():
+                envelope_str = json.dumps({
+                    "webmind_response": "message",
+                    "content": content
+                }, ensure_ascii=False)
+                block = f"[ASSISTANT]:\n```json\n{envelope_str}\n```"
+            else:
+                block = f"[{role.upper()}]:\n{content}"
+        else:
+            block = f"[{role.upper()}]:\n{content}"
+            if tcs:
+                block += f"\n[tool_calls]: {json.dumps(tcs)}"
         parts.append(block)
 
     last_msg = messages[-1] if messages else None
@@ -592,6 +625,19 @@ def build_deepseek_prompt(
                 "[edit failure recovery] The previous `edit` tool call failed because `oldString` was not found in the file. "
                 "CRITICAL: Do NOT guess or invent `oldString`. Call `read` on this file now to inspect the actual verbatim lines, then re-call `edit` with an exact verbatim 3-6 line snippet copied from `read`."
             )
+
+    if has_tools:
+        parts.append(
+            "[MANDATORY RESPONSE CONTRACT]\n"
+            "Your response MUST be wrapped in exactly ONE ```json code fence, and nothing else:\n"
+            "- To execute an action/tool: ```json\n"
+            '{"webmind_response": "tool_call", "tool_calls": [{"id": "call_<id>", "name": "<tool_name>", "arguments": {...}}]}\n'
+            "```\n"
+            "- For a direct answer/message: ```json\n"
+            '{"webmind_response": "message", "content": "..."}\n'
+            "```\n"
+            "Do NOT output plain text outside the fence. Emit the envelope now."
+        )
 
     return "\n\n".join(parts)
 
@@ -743,6 +789,14 @@ def parse_deepseek_response(
                         obj = recovered_obj
 
     if obj is None:
+        if tools:
+            refusal_errors = audit_spurious_refusal(raw, tools, history=history)
+            if refusal_errors:
+                return {
+                    "type": "validation_failure",
+                    "errors": refusal_errors,
+                    "content": f"Spurious refusal rejected: {'; '.join(refusal_errors)}",
+                }
         return {"type": "message", "content": raw}
 
     kind = obj.get("webmind_response")
@@ -787,6 +841,14 @@ def parse_deepseek_response(
     if kind == "message" or (kind is None and ("content" in obj or "message" in obj)):
         content = obj.get("content") if "content" in obj else obj.get("message")
         if isinstance(content, str):
+            if tools:
+                refusal_errors = audit_spurious_refusal(content, tools, history=history)
+                if refusal_errors:
+                    return {
+                        "type": "validation_failure",
+                        "errors": refusal_errors,
+                        "content": f"Spurious refusal rejected: {'; '.join(refusal_errors)}",
+                    }
             return {"type": "message", "content": content}
         return {"type": "message", "content": raw}
 
