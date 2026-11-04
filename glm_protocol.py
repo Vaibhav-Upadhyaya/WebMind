@@ -1,9 +1,9 @@
 # ============================================================
-# GLM (ChatGLM / Zhipu) WebMind Protocol: Tool-call translation bridge.
+# GLM-4 WebMind Protocol: Tool-call translation bridge.
 #
 # Pure logic only (unit-testable without a browser).
-# Translates OpenAI chat completions requests into GLM prompts,
-# and parses/validates GLM's returned JSON envelopes into
+# Translates OpenAI chat completions requests into GLM-4 prompts,
+# and parses/validates GLM-4's returned JSON envelopes into
 # standard OpenAI responses with anti-leak and multi-envelope support.
 # ============================================================
 
@@ -12,6 +12,8 @@ import os
 import re
 import uuid
 from typing import Any
+
+from protocol_recovery import audit_spurious_refusal
 
 
 def _role(msg: Any) -> str:
@@ -170,7 +172,6 @@ def _balance_json_structure(text: str) -> str:
     return "".join(out)
 
 
-
 def _clean_candidate(text: str) -> str:
     s = text.strip()
     s = re.sub(r"^<(?:escape|json|output|response|result)>\s*", "", s, flags=re.IGNORECASE).strip()
@@ -248,7 +249,7 @@ def _is_tool_envelope(obj: Any) -> bool:
 
 
 def _extract_json_object(text: str) -> dict | None:
-    """Robust multi-envelope and multi-backtick extraction for GLM."""
+    """Robust multi-envelope and multi-backtick extraction for GLM-4."""
     if not isinstance(text, str) or not text.strip():
         return None
 
@@ -452,14 +453,27 @@ def _inspect_tool_call(call: Any, tools: list[Any], tool_names: set[str]) -> tup
         "read_file": "read",
         "readfile": "read",
         "view_file": "read",
+        "read": "read_file",
+        "view": "read_file",
         "write_file": "write",
         "writefile": "write",
+        "write": "write_file",
         "edit_file": "edit",
         "editfile": "edit",
+        "edit": "edit_file",
+        "apply_diff": "edit",
+        "str_replace_editor": "edit",
         "shell": "bash",
+        "bash": "shell",
         "terminal": "bash",
         "powershell": "bash",
+        "cmd": "bash",
+        "sh": "bash",
         "run_command": "bash",
+        "execute_command": "bash",
+        "exec": "bash",
+        "execute": "bash",
+        "run": "bash",
     }
     if name not in tool_names:
         low = name.lower()
@@ -508,7 +522,7 @@ def build_glm_prompt(
     tools: list[Any],
     tool_choice: Any = None,
 ) -> str:
-    """Serialize messages + tools into a GLM prompt with envelope instructions."""
+    """Serialize messages + tools into a GLM-4 prompt with envelope instructions."""
     has_tools = bool(tools)
     parts: list[str] = []
 
@@ -521,6 +535,12 @@ def build_glm_prompt(
     if has_tools:
         instruction = (
             "You are an autonomous AI coding assistant connected to a live workspace with real tool capabilities.\n"
+            "OPERATIONAL CONTRACT:\n"
+            "1. TOOL DEFINITIONS: The tools listed below are live, executable system capabilities provided by the local workspace runtime.\n"
+            "2. TOOL CALL ENVELOPES: You do NOT execute tools or check user desktop permissions. You emit a ```json tool_call envelope.\n"
+            "3. RUNTIME EXECUTION: The local WebMind runtime executes the requested tool (e.g. running PowerShell/bash commands, opening apps, reading files).\n"
+            "4. TOOL RESULTS: The tool's output is returned to you in the subsequent turn under [TOOL].\n"
+            "- FORBIDDEN: NEVER claim you cannot open applications, cannot run PowerShell, lack desktop access, or need the user to run commands manually. Emit the `bash` tool call and let the runtime execute it.\n\n"
             "When executing tools, reply ONLY with a ```json code fence containing the tool_call envelope:\n"
             "```json\n"
             "{\n"
@@ -547,10 +567,28 @@ def build_glm_prompt(
     for msg in messages:
         role = _role(msg)
         content = _content_to_text(msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None))
-        block = f"[{role.upper()}]:\n{content}"
         tcs = msg.get("tool_calls") if isinstance(msg, dict) else getattr(msg, "tool_calls", None)
-        if tcs:
-            block += f"\n[tool_calls]: {json.dumps(tcs)}"
+
+        if role == "assistant" and has_tools:
+            if tcs:
+                call_list = tcs if isinstance(tcs, list) else [tcs]
+                envelope_str = json.dumps({
+                    "webmind_response": "tool_call",
+                    "tool_calls": call_list
+                }, indent=2)
+                block = f"[ASSISTANT]:\n```json\n{envelope_str}\n```"
+            elif content.strip():
+                envelope_str = json.dumps({
+                    "webmind_response": "message",
+                    "content": content
+                }, ensure_ascii=False)
+                block = f"[ASSISTANT]:\n```json\n{envelope_str}\n```"
+            else:
+                block = f"[{role.upper()}]:\n{content}"
+        else:
+            block = f"[{role.upper()}]:\n{content}"
+            if tcs:
+                block += f"\n[tool_calls]: {json.dumps(tcs)}"
         parts.append(block)
 
     last_msg = messages[-1] if messages else None
@@ -563,6 +601,19 @@ def build_glm_prompt(
                 "CRITICAL: Do NOT guess or invent `oldString`. Call `read` on this file now to inspect the actual verbatim lines, then re-call `edit` with an exact verbatim 3-6 line snippet copied from `read`."
             )
 
+    if has_tools:
+        parts.append(
+            "[MANDATORY RESPONSE CONTRACT]\n"
+            "Your response MUST be wrapped in exactly ONE ```json code fence, and nothing else:\n"
+            "- To execute an action/tool: ```json\n"
+            '{"webmind_response": "tool_call", "tool_calls": [{"id": "call_<id>", "name": "<tool_name>", "arguments": {...}}]}\n'
+            "```\n"
+            "- For a direct answer/message: ```json\n"
+            '{"webmind_response": "message", "content": "..."}\n'
+            "```\n"
+            "Do NOT output plain text outside the fence. Emit the envelope now."
+        )
+
     return "\n\n".join(parts)
 
 
@@ -571,7 +622,7 @@ def parse_glm_response(
     tools: list[Any],
     history: list[Any] | None = None,
 ) -> dict:
-    """Parse/validate GLM's reply, preventing tool call JSON leaks into chat."""
+    """Parse/validate GLM-4's reply, preventing tool call JSON leaks into chat."""
     raw = str(raw_text or "").strip()
     obj = _extract_json_object(raw)
 
@@ -580,14 +631,12 @@ def parse_glm_response(
         first_b = raw.find("{")
         if first_b != -1:
             prefix = raw[:first_b].strip()
-            prefix = _clean_wrapper_tags(prefix)
             prefix = _UI_CHROME_REGEX.sub("", prefix).strip()
             prefix = re.sub(r"^`{3,}[^\n`]*", "", prefix).strip()
             if not prefix:
                 last_b = raw.rfind("}")
                 if last_b > first_b:
                     suffix = raw[last_b + 1:].strip()
-                    suffix = _clean_wrapper_tags(suffix)
                     suffix = _UI_CHROME_REGEX.sub("", suffix).strip()
                     suffix = re.sub(r"`{3,}$", "", suffix).strip()
                     if not suffix:
@@ -602,6 +651,14 @@ def parse_glm_response(
                         obj = recovered_obj
 
     if obj is None:
+        if tools:
+            refusal_errors = audit_spurious_refusal(raw, tools, history=history)
+            if refusal_errors:
+                return {
+                    "type": "validation_failure",
+                    "errors": refusal_errors,
+                    "content": f"Spurious refusal rejected: {'; '.join(refusal_errors)}",
+                }
         return {"type": "message", "content": raw}
 
     kind = obj.get("webmind_response")
@@ -646,6 +703,14 @@ def parse_glm_response(
     if kind == "message" or (kind is None and ("content" in obj or "message" in obj)):
         content = obj.get("content") if "content" in obj else obj.get("message")
         if isinstance(content, str):
+            if tools:
+                refusal_errors = audit_spurious_refusal(content, tools, history=history)
+                if refusal_errors:
+                    return {
+                        "type": "validation_failure",
+                        "errors": refusal_errors,
+                        "content": f"Spurious refusal rejected: {'; '.join(refusal_errors)}",
+                    }
             return {"type": "message", "content": content}
         return {"type": "message", "content": raw}
 
